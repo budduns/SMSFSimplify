@@ -1,0 +1,733 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SMSF Simplify</title>
+  <!-- React and ReactDOM -->
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- Babel for JSX transpilation -->
+  <script src="https://unpkg.com/@babel/standalone@7.23.2/babel.min.js"></script>
+  <!-- PapaParse for CSV import -->
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <!-- XLSX for Excel export -->
+  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- Lucide for icons -->
+  <script src="https://unpkg.com/lucide@0.244.0/dist/umd/lucide.min.js"></script>
+  <!-- Recharts for charts -->
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
+  <!-- Tailwind CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet" />
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, Component } = React;
+
+    // Initialize Lucide icons
+    window.lucide.createIcons();
+    const { ArrowRight, PieChart, Download, Plus, Calendar, Upload, FileText, User } = window.lucide;
+
+    // Error Boundary Component
+    class ErrorBoundary extends Component {
+      state = { hasError: false, error: null };
+
+      static getDerivedStateFromError(error) {
+        console.error('ErrorBoundary caught:', error);
+        return { hasError: true, error };
+      }
+
+      render() {
+        if (this.state.hasError) {
+          return (
+            <div className="p-6 text-red-600">
+              <h2>Something went wrong.</h2>
+              <p>{this.state.error?.message || 'Unknown error'}</p>
+              <p>Check the console for details and report the error.</p>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+    // Main App Component
+    function SMSFSimplifyApp() {
+      // Simulated in-memory database
+      const transactionsDb = {
+        'q1': { income: [], expenses: [] },
+        'q2': { income: [], expenses: [] },
+        'q3': { income: [], expenses: [] },
+        'q4': { income: [], expenses: [] }
+      };
+
+      // Predefined categories
+      const expenseCategories = [
+        'Accounting', 'Bank Fees', 'Tools & Equipment', 'Materials & Supplies', 'Insurance',
+        'Shed Build', 'Rates', 'MV Lease', 'MV Rego / Insurance', 'MV Tolls / Parking',
+        'Office Supp', 'Rent', 'Telephone', 'Tax', 'Other'
+      ];
+      const incomeCategories = ['Interest', 'Super'];
+
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [activePeriod, setActivePeriod] = useState('q1');
+      const [transactions, setTransactions] = useState(transactionsDb);
+      const [fundProfile, setFundProfile] = useState({
+        name: 'BUDDUNS SMSF',
+        abn: '',
+        financialYear: '2022/23',
+        gstRegistered: 'Yes',
+        address: ''
+      });
+      const [txnForm, setTxnForm] = useState({
+        type: 'Income',
+        date: '',
+        description: '',
+        category: incomeCategories[0],
+        amount: '',
+        gst: '0.00'
+      });
+
+      const periods = {
+        q1: 'Jul - Sep',
+        q2: 'Oct - Dec',
+        q3: 'Jan - Mar',
+        q4: 'Apr - Jun'
+      };
+
+      // Calculate GST (1/11th of amount)
+      const calculateGST = (amount) => {
+        const num = parseFloat(amount);
+        return isNaN(num) ? '0.00' : (num / 11).toFixed(2);
+      };
+
+      // Handle transaction addition
+      const addTransaction = (type, transaction) => {
+        const amount = parseFloat(transaction.amount);
+        if (isNaN(amount) || !transaction.date || !transaction.description || !transaction.category) {
+          alert('Please fill in all required fields with valid values.');
+          return;
+        }
+        const newTransaction = {
+          ...transaction,
+          id: Date.now(),
+          gst: transaction.gst ? parseFloat(transaction.gst).toFixed(2) : calculateGST(amount),
+          amount: amount.toFixed(2)
+        };
+        console.log('Adding transaction:', newTransaction, 'to period:', activePeriod, 'type:', type);
+        setTransactions((prev) => {
+          const updated = {
+            ...prev,
+            [activePeriod]: {
+              ...prev[activePeriod],
+              [type]: [...(prev[activePeriod][type] || []), newTransaction]
+            }
+          };
+          console.log('Updated transactions state:', updated);
+          return updated;
+        });
+      };
+
+      // Handle CSV import
+      const handleImport = (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (results) => {
+            const importedTransactions = results.data
+              .filter(row => row['DATE'] && (row['AMOUNT'] || row['WHO FROM'] || row['WHO TO / WHAT FOR']))
+              .map((row) => {
+                const amount = parseFloat(row['AMOUNT']) || 0;
+                return {
+                  date: row['DATE'],
+                  description: row['WHO FROM'] || row['WHO TO / WHAT FOR'] || '',
+                  amount: amount.toFixed(2),
+                  gst: parseFloat(row['GST']) || calculateGST(amount),
+                  category: row['CATEGORY'] || (row['INTEREST'] ? 'Interest' : row['SUPER'] ? 'Super' : row['WHO TO / WHAT FOR'] || 'Other'),
+                  type: row['TYPE']?.toLowerCase() || (row['WHO FROM'] ? 'income' : 'expense')
+                };
+              });
+            const groupedByPeriod = importedTransactions.reduce((acc, t) => {
+              const date = new Date(t.date);
+              const month = isNaN(date.getMonth()) ? 0 : date.getMonth();
+              const period = month <= 2 ? 'q4' : month <= 5 ? 'q1' : month <= 8 ? 'q2' : 'q3';
+              acc[period] = acc[period] || { income: [], expenses: [] };
+              acc[period][t.type].push(t);
+              return acc;
+            }, {});
+            setTransactions((prev) => {
+              const updated = {
+                ...prev,
+                ...Object.keys(groupedByPeriod).reduce((acc, key) => ({
+                  ...acc,
+                  [key]: {
+                    income: [...(prev[key]?.income || []), ...(groupedByPeriod[key]?.income || [])],
+                    expenses: [...(prev[key]?.expenses || []), ...(groupedByPeriod[key]?.expenses || [])]
+                  }
+                }), {})
+              };
+              console.log('Imported transactions:', updated);
+              return updated;
+            });
+          },
+          error: (error) => console.error('Import error:', error)
+        });
+      };
+
+      // Export transactions to Excel
+      const exportToExcel = () => {
+        const wb = XLSX.utils.book_new();
+        Object.entries(transactions).forEach(([period, data]) => {
+          const incomeWs = XLSX.utils.json_to_sheet((data.income || []).map(t => ({
+            DATE: t.date,
+            'WHO FROM': t.description,
+            AMOUNT: t.amount,
+            GST: t.gst,
+            CATEGORY: t.category
+          })));
+          const expenseWs = XLSX.utils.json_to_sheet((data.expenses || []).map(t => ({
+            DATE: t.date,
+            'WHO TO / WHAT FOR': t.description,
+            CATEGORY: t.category,
+            AMOUNT: t.amount,
+            GST: t.gst
+          })));
+          XLSX.utils.book_append_sheet(wb, incomeWs, `${period}_Income`);
+          XLSX.utils.book_append_sheet(wb, expenseWs, `${period}_Expenses`);
+        });
+        XLSX.write(wb, 'SMSF_Simplify_Export.xlsx');
+      };
+
+      // Calculate summary statistics
+      const getSummary = () => {
+        let totalIncome = 0, totalExpenses = 0, gstCollected = 0, gstPaid = 0;
+        Object.values(transactions).forEach(period => {
+          (period.income || []).forEach(t => {
+            totalIncome += parseFloat(t.amount) || 0;
+            gstCollected += parseFloat(t.gst) || 0;
+          });
+          (period.expenses || []).forEach(t => {
+            totalExpenses += parseFloat(t.amount) || 0;
+            gstPaid += parseFloat(t.gst) || 0;
+          });
+        });
+        return { totalIncome, totalExpenses, gstCollected, gstPaid };
+      };
+
+      // Handle form input changes
+      const handleFormChange = (e) => {
+        const { name, value } = e.target;
+        console.log('Form change:', name, value);
+        if (name === 'amount') {
+          setTxnForm((prev) => ({
+            ...prev,
+            amount: value,
+            gst: calculateGST(value)
+          }));
+        } else if (name === 'type') {
+          setTxnForm((prev) => ({
+            ...prev,
+            type: value,
+            category: value === 'Income' ? incomeCategories[0] : expenseCategories[0]
+          }));
+        } else {
+          setTxnForm((prev) => ({
+            ...prev,
+            [name]: value
+          }));
+        }
+      };
+
+      // Handle form submission
+      const handleFormSubmit = () => {
+        if (!txnForm.date || !txnForm.description || !txnForm.amount || !txnForm.category) {
+          alert('Please fill in all required fields.');
+          return;
+        }
+        const type = txnForm.type.toLowerCase();
+        console.log('Submitting transaction:', { ...txnForm, type });
+        addTransaction(type, txnForm);
+        setTxnForm({
+          type: 'Income',
+          date: '',
+          description: '',
+          category: incomeCategories[0],
+          amount: '',
+          gst: '0.00'
+        });
+      };
+
+      return (
+        <div className="flex h-screen bg-gray-100">
+          {/* Sidebar */}
+          <div className="w-64 bg-white shadow-md">
+            <div className="p-4 border-b">
+              <h1 className="text-xl font-bold text-blue-800">SMSF Simplify</h1>
+              <p className="text-sm text-gray-500">Financial Year: {fundProfile.financialYear}</p>
+            </div>
+            <nav className="p-4">
+              <ul>
+                {['dashboard', 'transactions', 'reports', 'settings'].map(tab => (
+                  <li key={tab} className="mb-2">
+                    <button
+                      className={`flex items-center w-full p-2 rounded ${activeTab === tab ? 'bg-blue-100 text-blue-800' : 'text-gray-700 hover:bg-gray-100'}`}
+                      onClick={() => setActiveTab(tab)}
+                    >
+                      {tab === 'dashboard' && <i data-lucide="pie-chart" className="mr-2 w-5 h-5"></i>}
+                      {tab === 'transactions' && <i data-lucide="calendar" className="mr-2 w-5 h-5"></i>}
+                      {tab === 'reports' && <i data-lucide="file-text" className="mr-2 w-5 h-5"></i>}
+                      {tab === 'settings' && <i data-lucide="user" className="mr-2 w-5 h-5"></i>}
+                      {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          </div>
+
+          {/* Main Content */}
+          <div className="flex-1 overflow-auto">
+            {activeTab === 'dashboard' && (
+              <div className="p-6">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-2xl font-bold text-gray-800">Dashboard</h2>
+                  <button onClick={exportToExcel} className="px-3 py-1 bg-blue-600 text-white rounded flex items-center">
+                    <i data-lucide="download" className="mr-1 w-4 h-4"></i>
+                    Export
+                  </button>
+                </div>
+
+                {/* Summary Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                  {[
+                    { title: 'Total Income', value: getSummary().totalIncome, color: 'text-gray-800' },
+                    { title: 'Total Expenses', value: getSummary().totalExpenses, color: 'text-gray-800' },
+                    { title: 'GST Collected', value: getSummary().gstCollected, color: 'text-blue-600' },
+                    { title: 'GST Paid', value: getSummary().gstPaid, color: 'text-red-600' }
+                  ].map(card => (
+                    <div key={card.title} className="bg-white rounded-lg shadow p-4">
+                      <h3 className="text-sm font-medium text-gray-500 mb-2">{card.title}</h3>
+                      <p className={`text-2xl font-bold ${card.color}`}>${card.value.toFixed(2)}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Chart */}
+                <div className="bg-white rounded-lg shadow p-6 mb-6">
+                  <h3 className="text-lg font-medium text-gray-800 mb-4">Income & Expenses</h3>
+                  <div className="h-64">
+                    {Object.values(transactions).some(period => (period.income || []).length || (period.expenses || []).length) ? (
+                      <Recharts.ResponsiveContainer width="100%" height="100%">
+                        <Recharts.BarChart
+                          data={Object.entries(periods).map(([key, label]) => {
+                            console.log('Rendering chart for period:', key, transactions[key]);
+                            return {
+                              name: label,
+                              income: (transactions[key]?.income || []).reduce((sum, t) => sum + parseFloat(t.amount || 0), 0),
+                              expenses: (transactions[key]?.expenses || []).reduce((sum, t) => sum + parseFloat(t.amount || 0), 0)
+                            };
+                          })}
+                        >
+                          <Recharts.CartesianGrid strokeDasharray="3 3" />
+                          <Recharts.XAxis dataKey="name" />
+                          <Recharts.YAxis />
+                          <Recharts.Tooltip />
+                          <Recharts.Legend />
+                          <Recharts.Bar dataKey="income" fill="#3b82f6" />
+                          <Recharts.Bar dataKey="expenses" fill="#ef4444" />
+                        </Recharts.BarChart>
+                      </Recharts.ResponsiveContainer>
+                    ) : (
+                      <div className="h-full flex items-center justify-center bg-gray-50 rounded">
+                        <p className="text-gray-400">Chart will appear here when data is available</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Recent Transactions */}
+                <div className="bg-white rounded-lg shadow p-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-lg font-medium text-gray-800">Recent Transactions</h3>
+                    <button className="text-blue-600 text-sm flex items-center" onClick={() => setActiveTab('transactions')}>
+                      View All <i data-lucide="arrow-right" className="ml-1 w-4 h-4"></i>
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-gray-50">
+                          <th className="px-4 py-2 text-left text-gray-500 font-medium">Date</th>
+                          <th className="px-4 py-2 text-left text-gray-500 font-medium">Description</th>
+                          <th className="px-4 py-2 text-left text-gray-500 font-medium">Category</th>
+                          <th className="px-4 py-2 text-right text-gray-500 font-medium">Amount</th>
+                          <th className="px-4 py-2 text-right text-gray-500 font-medium">GST</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...(transactions[activePeriod]?.income || []), ...(transactions[activePeriod]?.expenses || [])]
+                          .sort((a, b) => new Date(b.date || '1970-01-01') - new Date(a.date || '1970-01-01'))
+                          .slice(0, 5)
+                          .map(t => (
+                            <tr key={t.id} className="border-t">
+                              <td className="px-4 py-3">{t.date || 'N/A'}</td>
+                              <td className="px-4 py-3">{t.description || 'N/A'}</td>
+                              <td className="px-4 py-3">{t.category || 'N/A'}</td>
+                              <td className="px-4 py-3 text-right">${parseFloat(t.amount || 0).toFixed(2)}</td>
+                              <td className="px-4 py-3 text-right">${parseFloat(t.gst || 0).toFixed(2)}</td>
+                            </tr>
+                          ))}
+                        {![...(transactions[activePeriod]?.income || []), ...(transactions[activePeriod]?.expenses || [])].length && (
+                          <tr className="border-t">
+                            <td className="px-4 py-3 text-gray-400" colSpan="5">No transactions found</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'transactions' && (
+              <div className="p-6">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-2xl font-bold text-gray-800">Transactions</h2>
+                  <div className="flex space-x-2">
+                    <label className="px-3 py-1 bg-white border border-gray-300 rounded flex items-center cursor-pointer">
+                      <i data-lucide="upload" className="mr-1 w-4 h-4"></i>
+                      Import
+                      <input type="file" accept=".csv" onChange={handleImport} className="hidden" />
+                    </label>
+                    <button className="px-3 py-1 bg-blue-600 text-white rounded flex items-center" onClick={() => document.getElementById('add-transaction-form').scrollIntoView()}>
+                      <i data-lucide="plus" className="mr-1 w-4 h-4"></i>
+                      Add Transaction
+                    </button>
+                  </div>
+                </div>
+
+                {/* Period Tabs */}
+                <div className="flex mb-6 bg-white rounded-lg shadow overflow-hidden">
+                  {Object.entries(periods).map(([key, label]) => (
+                    <button
+                      key={key}
+                      className={`flex-1 py-3 px-4 text-center ${activePeriod === key ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                      onClick={() => setActivePeriod(key)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Income Transactions */}
+                <div className="bg-white rounded-lg shadow p-6 mb-6">
+                  <h3 className="text-lg font-medium text-gray-800 mb-4">Income</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-gray-50">
+                          <th className="px-4 py-2 text-left text-gray-500 font-medium">Date</th>
+                          <th className="px-4 py-2 text-left text-gray-500 font-medium">Who From</th>
+                          <th className="px-4 py-2 text-right text-gray-500 font-medium">Amount</th>
+                          <th className="px-4 py-2 text-right text-gray-500 font-medium">GST</th>
+                          <th className="px-4 py-2 text-right text-gray-500 font-medium">Category</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(transactions[activePeriod]?.income || []).length ? transactions[activePeriod].income.map(t => (
+                          <tr key={t.id} className="border-t">
+                            <td className="px-4 py-3">{t.date || 'N/A'}</td>
+                            <td className="px-4 py-3">{t.description || 'N/A'}</td>
+                            <td className="px-4 py-3 text-right">${parseFloat(t.amount || 0).toFixed(2)}</td>
+                            <td className="px-4 py-3 text-right">${parseFloat(t.gst || 0).toFixed(2)}</td>
+                            <td className="px-4 py-3 text-right">{t.category || 'N/A'}</td>
+                          </tr>
+                        )) : (
+                          <tr className="border-t">
+                            <td className="px-4 py-3 text-gray-400" colSpan="5">No income transactions found</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Expense Transactions */}
+                <div className="bg-white rounded-lg shadow p-6 mb-6">
+                  <h3 className="text-lg font-medium text-gray-800 mb-4">Expenses</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-gray-50">
+                          <th className="px-4 py-2 text-left text-gray-500 font-medium">Date</th>
+                          <th className="px-4 py-2 text-left text-gray-500 font-medium">Who To / What For</th>
+                          <th className="px-4 py-2 text-left text-gray-500 font-medium">Category</th>
+                          <th className="px-4 py-2 text-right text-gray-500 font-medium">Amount</th>
+                          <th className="px-4 py-2 text-right text-gray-500 font-medium">GST</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(transactions[activePeriod]?.expenses || []).length ? transactions[activePeriod].expenses.map(t => (
+                          <tr key={t.id} className="border-t">
+                            <td className="px-4 py-3">{t.date || 'N/A'}</td>
+                            <td className="px-4 py-3">{t.description || 'N/A'}</td>
+                            <td className="px-4 py-3">{t.category || 'N/A'}</td>
+                            <td className="px-4 py-3 text-right">${parseFloat(t.amount || 0).toFixed(2)}</td>
+                            <td className="px-4 py-3 text-right">${parseFloat(t.gst || 0).toFixed(2)}</td>
+                          </tr>
+                        )) : (
+                          <tr className="border-t">
+                            <td className="px-4 py-3 text-gray-400" colSpan="5">No expense transactions found</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Add Transaction Form */}
+                <div id="add-transaction-form" className="bg-white rounded-lg shadow p-6">
+                  <h3 className="text-lg font-medium text-gray-800 mb-4">Add New Transaction</h3>
+                  <form id="transaction-form" onSubmit={(e) => e.preventDefault()}>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+                        <input
+                          type="date"
+                          name="date"
+                          className="w-full p-2 border rounded"
+                          value={txnForm.date}
+                          onChange={handleFormChange}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
+                        <select
+                          name="type"
+                          className="w-full p-2 border rounded"
+                          value={txnForm.type}
+                          onChange={handleFormChange}
+                          required
+                        >
+                          <option value="Income">Income</option>
+                          <option value="Expense">Expense</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                        <input
+                          type="text"
+                          name="description"
+                          className="w-full p-2 border rounded"
+                          placeholder="Who from/to or what for"
+                          value={txnForm.description}
+                          onChange={handleFormChange}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
+                        <select
+                          name="category"
+                          className="w-full p-2 border rounded"
+                          value={txnForm.category}
+                          onChange={handleFormChange}
+                          required
+                        >
+                          {(txnForm.type === 'Income' ? incomeCategories : expenseCategories || []).length ? (
+                            (txnForm.type === 'Income' ? incomeCategories : expenseCategories).map(cat => {
+                              console.log('Rendering category:', cat, 'for type:', txnForm.type);
+                              return <option key={cat} value={cat}>{cat}</option>;
+                            })
+                          ) : (
+                            <option value="">No categories available</option>
+                          )}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Amount (incl. GST)</label>
+                        <input
+                          type="number"
+                          name="amount"
+                          className="w-full p-2 border rounded"
+                          placeholder="0.00"
+                          step="0.01"
+                          min="0"
+                          value={txnForm.amount}
+                          onChange={handleFormChange}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">GST (calculated)</label>
+                        <input
+                          type="number"
+                          name="gst"
+                          className="w-full p-2 border rounded bg-gray-50"
+                          placeholder="0.00"
+                          step="0.01"
+                          min="0"
+                          value={txnForm.gst}
+                          onChange={handleFormChange}
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <button
+                          type="submit"
+                          className="w-full p-2 bg-blue-600 text-white rounded"
+                          onClick={handleFormSubmit}
+                        >
+                          Save Transaction
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'reports' && (
+              <div className="p-6">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-2xl font-bold text-gray-800">Reports</h2>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {[
+                    { title: 'Year-to-Date Summary', desc: 'View a summary of all transactions for the financial year.' },
+                    { title: 'BAS Report', desc: 'Generate a report for your quarterly Business Activity Statement.' },
+                    { title: 'Expense Categories', desc: 'Breakdown of expenses by category.' },
+                    { title: 'Income Report', desc: 'Detailed breakdown of all income sources.' }
+                  ].map(report => (
+                    <div key={report.title} className="bg-white rounded-lg shadow p-6">
+                      <h3 className="text-lg font-medium text-gray-800 mb-4">{report.title}</h3>
+                      <p className="mb-4 text-sm text-gray-600">{report.desc}</p>
+                      <button onClick={exportToExcel} className="w-full p-2 bg-blue-600 text-white rounded flex items-center justify-center">
+                        <i data-lucide="download" className="mr-2 w-4 h-4"></i>
+                        Download {report.title}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'settings' && (
+              <div className="p-6">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-2xl font-bold text-gray-800">Fund Profile</h2>
+                  <button
+                    className="px-3 py-1 bg-blue-600 text-white rounded"
+                    onClick={() => {
+                      setFundProfile({
+                        name: document.getElementById('fund-name').value || 'BUDDUNS SMSF',
+                        abn: document.getElementById('fund-abn').value || '',
+                        financialYear: document.getElementById('fund-year').value || '2022/23',
+                        gstRegistered: document.getElementById('fund-gst').value || 'Yes',
+                        address: document.getElementById('fund-address').value || ''
+                      });
+                    }}
+                  >
+                    Save Changes
+                  </button>
+                </div>
+                <div className="bg-white rounded-lg shadow p-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Fund Name</label>
+                      <input
+                        id="fund-name"
+                        type="text"
+                        className="w-full p-2 border rounded"
+                        defaultValue={fundProfile.name}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">ABN</label>
+                      <input
+                        id="fund-abn"
+                        type="text"
+                        className="w-full p-2 border rounded"
+                        defaultValue={fundProfile.abn}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Financial Year</label>
+                      <select id="fund-year" className="w-full p-2 border rounded" defaultValue={fundProfile.financialYear}>
+                        <option>2022/23</option>
+                        <option>2023/24</option>
+                        <option>2024/25</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">GST Registered</label>
+                      <select id="fund-gst" className="w-full p-2 border rounded" defaultValue={fundProfile.gstRegistered}>
+                        <option>Yes</option>
+                        <option>No</option>
+                      </select>
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Fund Address</label>
+                      <textarea id="fund-address" className="w-full p-2 border rounded" rows="3" defaultValue={fundProfile.address}></textarea>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Render the app with error boundary
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(
+      <ErrorBoundary>
+        <SMSFSimplifyApp />
+      </ErrorBoundary>
+    );
+  </script>
+</body>
+</html>
